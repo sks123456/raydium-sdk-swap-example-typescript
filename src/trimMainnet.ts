@@ -34,56 +34,71 @@ interface PoolInfo {
 async function trimMainnetJson() {
   const { tokenAAddress, tokenBAddress } = swapConfig;
 
-  const relevantPools: PoolInfo[] = [];
+  // Use a Set for faster lookup of token pairs
+  const tokenPairs = new Set([
+    `${tokenAAddress}:${tokenBAddress}`,
+    `${tokenBAddress}:${tokenAAddress}`,
+  ]);
+
+  let relevantPoolFound = false; // Early exit flag
+  let processedCount = 0; // Counter for processed items
+
+  const outputStream = fs.createWriteStream("trimmed_mainnet.json");
+  outputStream.write('{"official":['); // Start of JSON array
+
   const pipeline = chain([
-    fs.createReadStream("../mainnet.json"),
+    fs.createReadStream("../mainnet.json", { highWaterMark: 64 * 1024 }), // Larger chunk size
     parser(),
     pick({ filter: /^(official|unOfficial)$/ }), // Matches both "official" and "unOfficial"
     streamArray(),
   ]);
 
   console.log("Processing large mainnet.json file...");
-  let processedCount = 0; // Counter for processed items
 
   pipeline.on("data", (data) => {
-    processedCount += 1;
-    console.log(`Processing pool #${processedCount}:`, data.value);
+    processedCount++;
 
     const pool: PoolInfo = data.value;
-    if (
-      (pool.baseMint === tokenAAddress && pool.quoteMint === tokenBAddress) ||
-      (pool.baseMint === tokenBAddress && pool.quoteMint === tokenAAddress)
-    ) {
+    const tokenPairKey = `${pool.baseMint}:${pool.quoteMint}`;
+
+    if (tokenPairs.has(tokenPairKey)) {
       console.log("Found matching pool:", pool);
-      relevantPools.push(pool);
+
+      // Write to the output file incrementally
+      if (relevantPoolFound) {
+        outputStream.write(","); // Separate array items
+      }
+      outputStream.write(JSON.stringify(pool));
+
+      relevantPoolFound = true;
+
+      // Early exit if only one match is needed
+      // Uncomment below to stop processing after the first match
+      pipeline.destroy();
+      outputStream.write("]}"); // End of JSON array
     }
   });
 
   pipeline.on("end", () => {
     console.log("Finished processing the mainnet.json file.");
     console.log(`Total pools processed: ${processedCount}`);
-    console.log(`Total matching pools found: ${relevantPools.length}`);
 
-    if (relevantPools.length === 0) {
-      console.error("No matching pool found for the given token pair");
-      return;
+    outputStream.write("]}"); // End of JSON array
+    outputStream.end();
+
+    if (!relevantPoolFound) {
+      console.error("No matching pool found for the given token pair.");
+      fs.unlinkSync("trimmed_mainnet.json"); // Cleanup empty file
+    } else {
+      console.log(
+        "Trimmed mainnet.json file has been created as trimmed_mainnet.json"
+      );
     }
-
-    const trimmedData = {
-      official: relevantPools,
-    };
-
-    fs.writeFileSync(
-      "trimmed_mainnet.json",
-      JSON.stringify(trimmedData, null, 2)
-    );
-    console.log(
-      "Trimmed mainnet.json file has been created as trimmed_mainnet.json"
-    );
   });
 
   pipeline.on("error", (err) => {
     console.error("Error processing the file:", err);
+    outputStream.end(); // Ensure the output stream is closed on error
   });
 }
 
