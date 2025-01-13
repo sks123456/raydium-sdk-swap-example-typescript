@@ -1,58 +1,90 @@
 import fs from 'fs';
+import { chain } from 'stream-chain';
+import { parser } from 'stream-json';
+import { pick } from 'stream-json/filters/Pick';
+import { streamArray } from 'stream-json/streamers/StreamArray';
+
 import { swapConfig } from './swapConfig';
 
 interface PoolInfo {
-    id: string;
-    baseMint: string;
-    quoteMint: string;
-    lpMint: string;
-    version: number;
-    programId: string;
-    authority: string;
-    openOrders: string;
-    targetOrders: string;
-    baseVault: string;
-    quoteVault: string;
-    withdrawQueue: string;
-    lpVault: string;
-    marketVersion: number;
-    marketProgramId: string;
-    marketId: string;
-    marketAuthority: string;
-    marketBaseVault: string;
-    marketQuoteVault: string;
-    marketBids: string;
-    marketAsks: string;
-    marketEventQueue: string;
+  id: string;
+  baseMint: string;
+  quoteMint: string;
+  lpMint: string;
+  version: number;
+  programId: string;
+  authority: string;
+  openOrders: string;
+  targetOrders: string;
+  baseVault: string;
+  quoteVault: string;
+  withdrawQueue: string;
+  lpVault: string;
+  marketVersion: number;
+  marketProgramId: string;
+  marketId: string;
+  marketAuthority: string;
+  marketBaseVault: string;
+  marketQuoteVault: string;
+  marketBids: string;
+  marketAsks: string;
+  marketEventQueue: string;
 }
 
-function trimMainnetJson() {
-    // Read the local mainnet.json file
-    const mainnetData = JSON.parse(fs.readFileSync('../mainnet.json', 'utf-8'));
+async function trimMainnetJson() {
+  const { tokenAAddress, tokenBAddress } = swapConfig;
 
-    // Get the token addresses from swapConfig
-    const { tokenAAddress, tokenBAddress } = swapConfig;
+  const relevantPools: PoolInfo[] = [];
+  const pipeline = chain([
+    fs.createReadStream("../mainnet.json"),
+    parser(),
+    pick({ filter: /^(official|unOfficial)$/ }), // Matches both "official" and "unOfficial"
+    streamArray(),
+  ]);
 
-    // Find the pool that matches the token pair in both official and unofficial pools
-    const relevantPool = [...mainnetData.official, ...(mainnetData.unOfficial || [])].find((pool: PoolInfo) => 
-        (pool.baseMint === tokenAAddress && pool.quoteMint === tokenBAddress) ||
-        (pool.baseMint === tokenBAddress && pool.quoteMint === tokenAAddress)
-    );
+  console.log("Processing large mainnet.json file...");
+  let processedCount = 0; // Counter for processed items
 
-    if (!relevantPool) {
-        console.error('No matching pool found for the given token pair');
-        return;
+  pipeline.on("data", (data) => {
+    processedCount += 1;
+    console.log(`Processing pool #${processedCount}:`, data.value);
+
+    const pool: PoolInfo = data.value;
+    if (
+      (pool.baseMint === tokenAAddress && pool.quoteMint === tokenBAddress) ||
+      (pool.baseMint === tokenBAddress && pool.quoteMint === tokenAAddress)
+    ) {
+      console.log("Found matching pool:", pool);
+      relevantPools.push(pool);
+    }
+  });
+
+  pipeline.on("end", () => {
+    console.log("Finished processing the mainnet.json file.");
+    console.log(`Total pools processed: ${processedCount}`);
+    console.log(`Total matching pools found: ${relevantPools.length}`);
+
+    if (relevantPools.length === 0) {
+      console.error("No matching pool found for the given token pair");
+      return;
     }
 
-    // Create a new object with only the necessary information
     const trimmedData = {
-        official: [relevantPool]
+      official: relevantPools,
     };
 
-    // Write the trimmed data to a new file
-    fs.writeFileSync('trimmed_mainnet.json', JSON.stringify(trimmedData, null, 2));
+    fs.writeFileSync(
+      "trimmed_mainnet.json",
+      JSON.stringify(trimmedData, null, 2)
+    );
+    console.log(
+      "Trimmed mainnet.json file has been created as trimmed_mainnet.json"
+    );
+  });
 
-    console.log('Trimmed mainnet.json file has been created as trimmed_mainnet.json');
+  pipeline.on("error", (err) => {
+    console.error("Error processing the file:", err);
+  });
 }
 
 trimMainnetJson();
